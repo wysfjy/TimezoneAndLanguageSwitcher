@@ -15,8 +15,8 @@ android {
         applicationId = "com.time.set"
         minSdk = 33
         targetSdk = 36
-        versionCode = 4
-        versionName = "beta0.0.3"
+        versionCode = 5
+        versionName = "beta0.1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }

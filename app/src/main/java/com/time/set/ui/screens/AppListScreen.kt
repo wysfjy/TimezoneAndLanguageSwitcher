@@ -1,11 +1,11 @@
 package com.time.set.ui.screens
 
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Search
@@ -26,6 +26,8 @@ import com.time.set.data.AppRepository
 import com.time.set.data.FullAppItem
 import com.time.set.logic.ActionManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.text.Collator
@@ -67,24 +69,44 @@ fun AppListScreen(showTopBar: Boolean = true) {
 
     var isLoadingApps by remember { mutableStateOf(false) }
     var apps by remember { mutableStateOf<List<FullAppItem>>(emptyList()) }
+    // 存储每个应用的语言信息
+    var localeMap by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var isLoadingLocales by remember { mutableStateOf(false) }
 
-    LaunchedEffect(selectedUser?.id, refreshTrigger) {
+    LaunchedEffect(selectedUser?.id, refreshTrigger, showSystemApps) {
         isLoadingApps = true
+        localeMap = emptyMap()
         apps = withContext(Dispatchers.IO) {
-            AppRepository.getInstalledApps(context, selectedUser?.id ?: 0)
+            AppRepository.getInstalledApps(context, selectedUser?.id ?: 0, showSystemApps)
         }
         isLoadingApps = false
+
+        // 批量加载语言信息，限制并发数为 5
+        isLoadingLocales = true
+        val userId = selectedUser?.id ?: 0
+        val concurrency = 5
+        val mutableLocaleMap = mutableMapOf<String, String>()
+        withContext(Dispatchers.IO) {
+            apps.chunked(concurrency).forEach { chunk ->
+                val results = chunk.map { app ->
+                    async {
+                        app.packageName to ActionManager.getAppLocale(app.packageName, userId)
+                    }
+                }.awaitAll()
+                results.forEach { (pkg, locale) ->
+                    mutableLocaleMap[pkg] = locale
+                }
+                localeMap = mutableLocaleMap.toMap()
+            }
+        }
+        isLoadingLocales = false
     }
 
-    val sortedAndFilteredApps = remember(searchQuery, sortOrder, isAscending, showSystemApps, apps) {
+    val sortedAndFilteredApps = remember(searchQuery, sortOrder, isAscending, apps) {
         val collator = Collator.getInstance(Locale.CHINA)
         val filtered = apps.filter {
-            val matchesSearch = it.name.contains(searchQuery, ignoreCase = true) || 
-                               it.packageName.contains(searchQuery, ignoreCase = true)
-            
-            val matchesSystemFilter = if (showSystemApps) true else !it.isSystemApp
-            
-            matchesSearch && matchesSystemFilter
+            it.name.contains(searchQuery, ignoreCase = true) || 
+            it.packageName.contains(searchQuery, ignoreCase = true)
         }
         
         val comparator = when (sortOrder) {
@@ -251,20 +273,37 @@ fun AppListScreen(showTopBar: Boolean = true) {
                     .padding(horizontal = 16.dp, vertical = 8.dp)
             ) {}
 
-            LazyColumn(modifier = Modifier.fillMaxSize()) {
-                items(sortedAndFilteredApps, key = { it.packageName }) { app ->
-                    var currentLocale by remember(app.packageName, refreshTrigger, selectedUser?.id) { mutableStateOf("...") }
-                    var isFetchingLocale by remember(app.packageName, refreshTrigger, selectedUser?.id) { mutableStateOf(false) }
-                    
-                    LaunchedEffect(app.packageName, refreshTrigger, selectedUser?.id) {
-                        selectedUser?.let { user ->
-                            isFetchingLocale = true
-                            currentLocale = withContext(Dispatchers.IO) {
-                                ActionManager.getAppLocale(app.packageName, user.id)
-                            }
-                            isFetchingLocale = false
+            val listState = rememberLazyListState()
+            // 图标缓存：mutableStateMapOf 确保加载完自动触发 recomposition
+            val iconMap = remember { mutableStateMapOf<String, android.graphics.drawable.Drawable?>() }
+
+            // 监听滚动位置，批量预取当前可见区域 + 前后各 20 个图标的图标
+            LaunchedEffect(listState.isScrollInProgress, sortedAndFilteredApps) {
+                if (sortedAndFilteredApps.isEmpty()) return@LaunchedEffect
+                val visible = listState.layoutInfo.visibleItemsInfo
+                if (visible.isEmpty()) return@LaunchedEffect
+                val first = (visible.first().index - 20).coerceAtLeast(0)
+                val last = (visible.last().index + 20).coerceAtMost(sortedAndFilteredApps.lastIndex)
+                val toLoad = (first..last).mapNotNull { i ->
+                    val pkg = sortedAndFilteredApps[i].packageName
+                    if (pkg !in iconMap) pkg else null
+                }
+                if (toLoad.isEmpty()) return@LaunchedEffect
+                // 单协程、分批加载，避免并发竞争
+                withContext(Dispatchers.IO) {
+                    toLoad.chunked(4).forEach { chunk ->
+                        chunk.forEach { pkg ->
+                            iconMap[pkg] = AppRepository.loadAppIcon(context, pkg)
                         }
                     }
+                }
+            }
+
+            LazyColumn(state = listState, modifier = Modifier.fillMaxSize()) {
+                items(sortedAndFilteredApps, key = { it.packageName }) { app ->
+                    val currentLocale = localeMap[app.packageName]
+                    val isFetchingLocale = currentLocale == null && isLoadingLocales
+                    val icon = iconMap[app.packageName]
 
                     ListItem(
                         headlineContent = { Text(app.name) },
@@ -275,7 +314,7 @@ fun AppListScreen(showTopBar: Boolean = true) {
                                     CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                                 } else {
                                     Text(
-                                        text = currentLocale,
+                                        text = currentLocale ?: "未知",
                                         style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.primary
                                     )
@@ -283,9 +322,9 @@ fun AppListScreen(showTopBar: Boolean = true) {
                             }
                         },
                         leadingContent = {
-                            if (app.icon != null) {
+                            if (icon != null) {
                                 Image(
-                                    bitmap = app.icon.toBitmap().asImageBitmap(),
+                                    bitmap = icon.toBitmap().asImageBitmap(),
                                     contentDescription = null,
                                     modifier = Modifier.size(40.dp)
                                 )
