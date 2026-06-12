@@ -25,6 +25,8 @@ import androidx.core.graphics.drawable.toBitmap
 import com.time.set.data.AppRepository
 import com.time.set.data.FullAppItem
 import com.time.set.logic.ActionManager
+import com.time.set.utils.LocaleHelper
+import com.time.set.utils.Prefs
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -39,10 +41,57 @@ enum class AppSortOrder {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AppListScreen(showTopBar: Boolean = true) {
+fun DeveloperToolsDialog(
+    onDismissRequest: () -> Unit,
+    onResetActivation: () -> Unit
+) {
+    var isDetailedLogEnabled by remember { mutableStateOf(Prefs.isDetailedLogEnabled) }
+
+    AlertDialog(
+        onDismissRequest = onDismissRequest,
+        title = { Text("开发者工具") },
+        text = {
+            Column {
+                ListItem(
+                    headlineContent = { Text("详细日志输出 (Logcat)") },
+                    trailingContent = {
+                        Switch(
+                            checked = isDetailedLogEnabled,
+                            onCheckedChange = {
+                                isDetailedLogEnabled = it
+                                Prefs.isDetailedLogEnabled = it
+                            }
+                        )
+                    }
+                )
+                HorizontalDivider()
+                ListItem(
+                    headlineContent = { Text("重置激活状态", color = MaterialTheme.colorScheme.error) },
+                    modifier = Modifier.clickable {
+                        onResetActivation()
+                        onDismissRequest()
+                    }
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismissRequest) {
+                Text("关闭")
+            }
+        }
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AppListScreen(showTopBar: Boolean = true, onReset: () -> Unit = {}) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val snackbarHostState = remember { SnackbarHostState() }
+    
+    // 连点计数器
+    var titleClickCount by remember { mutableIntStateOf(0) }
+    var lastClickTime by remember { mutableLongStateOf(0L) }
     
     var searchQuery by remember { mutableStateOf("") }
     var sortOrder by remember { mutableStateOf(AppSortOrder.NAME) }
@@ -52,6 +101,7 @@ fun AppListScreen(showTopBar: Boolean = true) {
     
     var showLocaleSheet by remember { mutableStateOf(false) }
     var showSystemAppWarning by remember { mutableStateOf(false) }
+    var showDeveloperTools by remember { mutableStateOf(false) }
     var selectedApp by remember { mutableStateOf<FullAppItem?>(null) }
     var refreshTrigger by remember { mutableStateOf(0) }
 
@@ -70,12 +120,12 @@ fun AppListScreen(showTopBar: Boolean = true) {
     var isLoadingApps by remember { mutableStateOf(false) }
     var apps by remember { mutableStateOf<List<FullAppItem>>(emptyList()) }
     // 存储每个应用的语言信息
-    var localeMap by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    val localeMap = remember { mutableStateMapOf<String, String>() }
     var isLoadingLocales by remember { mutableStateOf(false) }
 
     LaunchedEffect(selectedUser?.id, refreshTrigger, showSystemApps) {
         isLoadingApps = true
-        localeMap = emptyMap()
+        localeMap.clear()
         apps = withContext(Dispatchers.IO) {
             AppRepository.getInstalledApps(context, selectedUser?.id ?: 0, showSystemApps)
         }
@@ -96,7 +146,9 @@ fun AppListScreen(showTopBar: Boolean = true) {
                 results.forEach { (pkg, locale) ->
                     mutableLocaleMap[pkg] = locale
                 }
-                localeMap = mutableLocaleMap.toMap()
+                mutableLocaleMap.forEach { (pkg, locale) ->
+                    localeMap[pkg] = locale
+                }
             }
         }
         isLoadingLocales = false
@@ -122,7 +174,26 @@ fun AppListScreen(showTopBar: Boolean = true) {
         topBar = {
             if (showTopBar) {
                 CenterAlignedTopAppBar(
-                    title = { Text("应用语言设置") },
+                    title = { 
+                        Text(
+                            text = "应用语言设置",
+                            modifier = Modifier
+                                .padding(horizontal = 16.dp, vertical = 8.dp)
+                                .clickable {
+                                    val now = System.currentTimeMillis()
+                                    if (now - lastClickTime < 500) {
+                                        titleClickCount++
+                                    } else {
+                                        titleClickCount = 1
+                                    }
+                                    lastClickTime = now
+                                    if (titleClickCount >= 10) {
+                                        showDeveloperTools = true
+                                        titleClickCount = 0
+                                    }
+                                }
+                        ) 
+                    },
                     actions = {
                         // 用户切换按钮
                         Box {
@@ -314,7 +385,7 @@ fun AppListScreen(showTopBar: Boolean = true) {
                                     CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
                                 } else {
                                     Text(
-                                        text = currentLocale ?: "未知",
+                                        text = LocaleHelper.getLocaleName(currentLocale ?: "未知"),
                                         style = MaterialTheme.typography.labelMedium,
                                         color = MaterialTheme.colorScheme.primary
                                     )
@@ -383,8 +454,16 @@ fun AppListScreen(showTopBar: Boolean = true) {
                             ListItem(
                                 headlineContent = { Text(label) },
                                 modifier = Modifier.clickable {
+                                    // 1. 立即关闭 BottomSheet 面板，提升体感速度
+                                    showLocaleSheet = false
+                                    
                                     scope.launch {
-                                        isSettingLocale = true
+                                        // 2. 立即更新本地 UI 状态（乐观更新）
+                                        selectedApp?.packageName?.let { pkg ->
+                                            localeMap[pkg] = label
+                                        }
+
+                                        // 3. 在后台执行 Shell 命令
                                         val result = withContext(Dispatchers.IO) {
                                             ActionManager.setAppLocale(
                                                 selectedApp!!.packageName, 
@@ -393,14 +472,12 @@ fun AppListScreen(showTopBar: Boolean = true) {
                                             )
                                         }
                                         
+                                        // 4. 处理系统应用警告和结果提示
                                         if (selectedApp?.isSystemApp == true) {
                                             showSystemAppWarning = true
                                         }
                                         
                                         snackbarHostState.showSnackbar("设置结果: $result")
-                                        isSettingLocale = false
-                                        showLocaleSheet = false
-                                        refreshTrigger++
                                     }
                                 }
                             )
@@ -421,6 +498,13 @@ fun AppListScreen(showTopBar: Boolean = true) {
                         Text("确定")
                     }
                 }
+            )
+        }
+
+        if (showDeveloperTools) {
+            DeveloperToolsDialog(
+                onDismissRequest = { showDeveloperTools = false },
+                onResetActivation = onReset
             )
         }
     }

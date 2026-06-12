@@ -1,8 +1,11 @@
 package com.time.set.logic
 
+import android.util.Log
+import com.time.set.utils.Prefs
 import com.time.set.utils.ShellExecutor
 
 object ActionManager {
+    private const val TAG = "ActionManager"
     
     fun setTimezone(timezoneId: String): String {
         // 使用用户提供的命令：service call alarm 3 s16 'America/New_York'
@@ -11,12 +14,18 @@ object ActionManager {
     }
     
     fun setAppLocale(packageName: String, locale: String, userId: Int = 0): String {
+        if (Prefs.isDetailedLogEnabled) {
+            Log.d(TAG, "Setting locale for $packageName to '$locale' (user $userId)")
+        }
         // 使用引号包裹 locale 以支持空字符串（重置为默认）
         val command = "cmd locale set-app-locales $packageName --locales '$locale' --user $userId"
         val result = ShellExecutor.exec(command)
         
         // 修改成功后尝试强行停止应用以使语言生效
         if (result.contains("成功") || result.isEmpty()) {
+            if (Prefs.isDetailedLogEnabled) {
+                Log.d(TAG, "Force stopping $packageName")
+            }
             ShellExecutor.exec("am force-stop $packageName --user $userId")
         }
         

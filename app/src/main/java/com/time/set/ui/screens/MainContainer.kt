@@ -99,17 +99,25 @@ fun MainContainer() {
         ) { innerPadding ->
             Surface(modifier = Modifier.padding(innerPadding)) {
                 when (selectedTab) {
-                    0 -> AppListScreenContent()
+                    0 -> AppListScreen(
+                        showTopBar = true,
+                        onReset = {
+                            // 清除激活信息
+                            prefs.edit().remove("last_activation_mode").apply()
+                            // 销毁持久 Shell
+                            ShellExecutor.destroy()
+                            ShellExecutor.currentMode = ShellExecutor.Mode.NONE
+                            // 重置状态回到激活页面
+                            isActivated = false
+                            showMain = false
+                            initialCheckDone = true // 已经检查过了，只是回退
+                        }
+                    )
                     1 -> TimezoneListScreenContent()
                 }
             }
         }
     }
-}
-
-@Composable
-fun AppListScreenContent() {
-    AppListScreen(showTopBar = true)
 }
 
 @Composable
