@@ -107,7 +107,7 @@ fun MainContainer() {
                             // 销毁持久 Shell
                             ShellExecutor.destroy()
                             ShellExecutor.currentMode = ShellExecutor.Mode.NONE
-                            // 重置状态回到激活页面
+                            // 重置状态并回到激活页面
                             isActivated = false
                             showMain = false
                             initialCheckDone = true // 已经检查过了，只是回退
