@@ -23,6 +23,9 @@ object ActionManager {
         
         // 修改成功后尝试强行停止应用以使语言生效
         if (result.contains("成功") || result.isEmpty()) {
+            // 增加 0.3s 延迟，确保系统已处理完语言变更持久化
+            Thread.sleep(300)
+
             if (Prefs.isDetailedLogEnabled) {
                 Log.d(TAG, "Force stopping $packageName")
             }

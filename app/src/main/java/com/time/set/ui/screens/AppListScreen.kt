@@ -418,8 +418,12 @@ fun AppListScreen(showTopBar: Boolean = true, onReset: () -> Unit = {}) {
         
         if (showLocaleSheet && selectedApp != null) {
             var isSettingLocale by remember { mutableStateOf(false) }
+            val sheetState = rememberModalBottomSheetState(
+                confirmValueChange = { !isSettingLocale } // 加载中禁止手势关闭
+            )
 
             ModalBottomSheet(
+                sheetState = sheetState,
                 onDismissRequest = { if (!isSettingLocale) showLocaleSheet = false }
             ) {
                 Column(modifier = Modifier.padding(16.dp).fillMaxWidth()) {
@@ -454,16 +458,16 @@ fun AppListScreen(showTopBar: Boolean = true, onReset: () -> Unit = {}) {
                             ListItem(
                                 headlineContent = { Text(label) },
                                 modifier = Modifier.clickable {
-                                    // 1. 立即关闭 BottomSheet 面板，提升体感速度
-                                    showLocaleSheet = false
-                                    
                                     scope.launch {
-                                        // 2. 立即更新本地 UI 状态（乐观更新）
+                                        // 1. 显示加载状态（如果 UI 有相关逻辑的话，这里虽然没有显式全局 Loading，但我们可以推迟关闭）
+                                        isSettingLocale = true
+                                        
+                                        // 2. 立即更新本地 UI 状态（乐观反馈）
                                         selectedApp?.packageName?.let { pkg ->
                                             localeMap[pkg] = label
                                         }
 
-                                        // 3. 在后台执行 Shell 命令
+                                        // 3. 执行 Shell 命令（内部已有 0.3s 延迟）
                                         val result = withContext(Dispatchers.IO) {
                                             ActionManager.setAppLocale(
                                                 selectedApp!!.packageName, 
@@ -472,11 +476,13 @@ fun AppListScreen(showTopBar: Boolean = true, onReset: () -> Unit = {}) {
                                             )
                                         }
                                         
-                                        // 4. 处理系统应用警告和结果提示
+                                        // 4. 全部处理完后再关闭面板，给用户一个“处理完成”的体感
+                                        showLocaleSheet = false
+                                        isSettingLocale = false
+                                        
                                         if (selectedApp?.isSystemApp == true) {
                                             showSystemAppWarning = true
                                         }
-                                        
                                         snackbarHostState.showSnackbar("设置结果: $result")
                                     }
                                 }
